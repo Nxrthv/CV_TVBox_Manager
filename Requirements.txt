@@ -1,0 +1,6 @@
+quart
+psycopg2
+aiohttp
+Flask
+reportlab
+pandas
