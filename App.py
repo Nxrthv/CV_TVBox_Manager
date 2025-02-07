@@ -1,5 +1,5 @@
-from quart import Quart, render_template, request, redirect, url_for, flash, render_template_string, jsonify
-import psycopg2, time , subprocess, aiohttp, asyncio, os
+from quart import Quart, render_template, request, redirect, url_for, flash, jsonify
+import psycopg2, time, subprocess, aiohttp, asyncio, os, logging, requests
 from Conexion import conectar_db
 
 app = Quart(__name__)
@@ -12,26 +12,27 @@ async def index():
         conn = conectar_db()
         cursor = conn.cursor()
         cursor.execute('''
+            WITH UltimasVerificaciones AS (
+                SELECT 
+                    url_id, 
+                    exito, 
+                    fecha_verificacion,
+                    ROW_NUMBER() OVER (PARTITION BY url_id ORDER BY fecha_verificacion DESC) AS rn
+                FROM 
+                    verificaciones
+            )
+
             SELECT 
                 u.id, 
                 u.url, 
-                u.intervalo_verificacion, 
                 u.nombre, 
-                COALESCE(v.fecha_verificacion) AS fecha_verificacion,
+                COALESCE(v.fecha_verificacion, NULL) AS fecha_verificacion,
                 COALESCE(v.exito, FALSE) AS exito,
                 u.ip_tvbox
             FROM 
                 urls u
             LEFT JOIN 
-                (SELECT url_id, exito, fecha_verificacion  -- Asegúrate de incluir fecha_verificacion aquí
-                FROM verificaciones v1
-                WHERE fecha_verificacion = (
-                    SELECT MAX(fecha_verificacion) 
-                    FROM verificaciones v2 
-                    WHERE v1.url_id = v2.url_id
-                )) v
-            ON 
-                u.id = v.url_id
+                UltimasVerificaciones v ON u.id = v.url_id AND v.rn = 1
             ORDER BY
                 u.nombre ASC;
         ''')
@@ -43,9 +44,97 @@ async def index():
         cursor.close()
         conn.close()
     
-    return await render_template('index.html', urls=urls)
+    return await render_template('Index.html', urls=urls)
+
+# Agregar URL
+@app.route('/agregar', methods=['POST'])
+async def agregar_url():
+    
+    form_data = await request.form
+    nombre = form_data.get('nombre', '').upper()
+    url = form_data.get('url', '')
+    ip_tvbox = form_data.get('ip', '')
+
+    # Validar campos
+    if not nombre or not url or not ip_tvbox:
+        flash('⚠️ Por favor, completa todos los campos.', 'error')
+        return redirect(url_for('index'))
+    
+    conn = conectar_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            'INSERT INTO urls (nombre, url, ip_tvbox) VALUES (%s, %s, %s)',
+            (nombre, url, ip_tvbox)
+        )
+        conn.commit()
+        await flash('✅ URL agregada correctamente.', 'success')
+
+    except psycopg2.IntegrityError:
+        conn.rollback()
+        await flash('⚠️ La URL ya está registrada.', 'error')
+
+    finally:
+        cursor.close()
+        conn.close()
+
+    return redirect(url_for('index'))
+
+# Eliminar URL
+@app.route('/eliminar/<int:id>', methods=['POST'])
+async def eliminar_url(id):
+    conn = conectar_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute('DELETE FROM verificaciones WHERE url_id = %s', (id,))
+        
+        cursor.execute('DELETE FROM urls WHERE id = %s', (id,))
+        
+        if cursor.rowcount == 0:
+            await flash('⚠️ No se encontró la URL para eliminar.', 'error')
+        else:
+            conn.commit()
+            await flash('URL eliminada correctamente.', 'success')
+    except psycopg2.Error as e:
+        conn.rollback()
+        await flash(f'⚠️ Ocurrió un error al eliminar la URL: {str(e)}', 'error')
+    finally:
+        cursor.close()
+        conn.close()
+
+    return redirect(url_for('index'))
+
+#Verificar Errores
+@app.route('/verificar_errores', methods=['POST'])
+async def verificar_errores():
+    return None
 
 #Verificar todas las URLs
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def verificar_stream(url):
+    try:
+        # Hacer la solicitud con stream=True para evitar que se cuelgue
+        with requests.get(url, stream=True, timeout=5) as response:
+            if response.status_code == 200:
+                # Leer solo un pequeño fragmento para verificar que el stream está activo
+                chunk = next(response.iter_content(1024), None)
+                if chunk:
+                    # Verificar si es un stream M3U8
+                    if url.endswith('.m3u8') and not response.text.startswith('#EXTM3U'):
+                        return response.status_code, time.time(), True  # No es un M3U8 válido
+                    return response.status_code, time.time(), True  # Stream activo
+                else:
+                    return response.status_code, time.time(), False  # Stream no activo
+            else:
+                return response.status_code, time.time(), False  # Stream no activo
+    except requests.Timeout:
+        logging.error(f"⚠️ Timeout al intentar acceder a {url}")
+        return None, None, False  # Timeout
+    except requests.RequestException as e:
+        logging.error(f'❌ Error al verificar el stream {url}: {e}')
+        return None, None, False
+
 @app.route('/verificar', methods=['POST'])
 async def verificar_todas():
     conn = None
@@ -60,26 +149,29 @@ async def verificar_todas():
         cursor.execute('SELECT id, url FROM urls')
         urls = cursor.fetchall()
 
-        print(f"🔍 Verificando {len(urls)} URLs...")
+        resultados = []
+        for url_id, url in urls:
+            logging.info(f'Verificando URL: {url}')
+            codigo, tiempo, exito = verificar_stream(url)
+            resultados.append((url_id, codigo, tiempo, exito))
 
-        resultados = await verificar_todas_urls(urls)
         print(f"Resultados de verificación: {resultados}")
 
         for url_id, codigo, tiempo, exito in resultados:
+            print(f"Preparando inserción: url_id={url_id}, codigo={codigo}, tiempo={tiempo}, exito={exito}")
             try:
                 if codigo is not None:
                     cursor.execute(''' 
                         INSERT INTO verificaciones (url_id, fecha_verificacion, codigo_respuesta, tiempo_respuesta, exito) 
-                        VALUES (%s, NOW(), %s, %s, %s)
-                    ''', (url_id, codigo, tiempo, exito))
+                        VALUES (%s, NOW(), %s, %s::interval, %s)
+                    ''', (url_id, codigo, f'{tiempo} seconds', exito))
                 else:
-                    cursor.execute('''
-                        INSERT INTO errores (url_id, fecha_error, tipo_error)
-                        VALUES (%s, NOW(), %s)
-                    ''', (url_id, "Error al verificar la URL"))
-            except Exception as insert_error:
-                print(f"❌ Error al insertar en la tabla de verificaciones: {insert_error}")
-                conn.rollback()  # Deshacer cualquier cambio si hay un error
+                    cursor.execute(''' 
+                        INSERT INTO verificaciones (url_id, fecha_verificacion, codigo_respuesta, tiempo_respuesta, exito) 
+                        VALUES (%s, NOW(), %s, %s::interval, %s)
+                    ''', (url_id, -1, '0 seconds', False))
+            except Exception as e:
+                print(f"❌ Error al insertar en la tabla verificaciones: {e}")
 
         conn.commit()
         flash('✅ Todas las URLs han sido verificadas.', 'success')
@@ -97,92 +189,15 @@ async def verificar_todas():
 
     return redirect(url_for('index'))
 
-async def verificar_url(url, url_id):
-    headers = {
-        "User -Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36"
-    }
-    try:
-        async with aiohttp.ClientSession() as session:
-            inicio = time.time()
-            async with session.get(url, headers=headers, timeout=5) as respuesta:
-                tiempo_respuesta = time.time() - inicio
-                codigo = respuesta.status
-                exito = (codigo == 200)
-                print(f"✅ URL verificada: {url} - Código {codigo}, Tiempo {tiempo_respuesta:.2f}s")
-                return (url_id, codigo, tiempo_respuesta, exito)
-    except asyncio.TimeoutError:
-        print(f"⏳ Timeout al verificar la URL: {url}")
-        return (url_id, None, None, False)
-    except Exception as e:
-        print(f"❌ Error al verificar la URL {url}: {e}")
-        return (url_id, None, None, False)
-    
-async def verificar_todas_urls(urls):
-    tasks = []
-    for url_id, url in urls:
-        tasks.append(verificar_url(url, url_id))
-    return await asyncio.gather(*tasks)
-
-#Registrar Errores
-def registrar_error(url_id, tipo_error):
-    conn = conectar_db()
-    cursor = conn.cursor()
-    
-    try:
-        cursor.execute('''
-            INSERT INTO errores (url_id, fecha_error, tipo_error)
-            VALUES (%s, NOW(), %s)
-        ''', (url_id, tipo_error))
-        conn.commit()
-        print(f"⚠️ Error registrado en BD: {tipo_error}")
-    except Exception as db_error:
-        print(f"❌ Error al registrar en la tabla errores: {db_error}")
-        conn.rollback()
-    finally:
-        cursor.close()
-        conn.close()
-
-# Agregar URL
-@app.route('/agregar', methods=['POST'])
-def agregar_url():
-    if request.method == 'POST':
-        nombre = request.form['nombre'].upper()
-        url = request.form['url']
-        ip_tvbox = request.form['ip']  # Capturar la IP ingresada
-        intervalo = request.form['intervalo']
-
-        if not nombre or not url or not intervalo or not ip_tvbox:
-            flash('⚠️ Por favor, completa todos los campos.', 'error')
-            return redirect(url_for('index'))
-        
-        conn = conectar_db()
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                'INSERT INTO urls (nombre, url, intervalo_verificacion, ip_tvbox) VALUES (%s, %s, %s, %s)',
-                (nombre, url, intervalo, ip_tvbox)
-            )
-            conn.commit()
-            flash('✅ URL agregada correctamente.', 'success')
-
-        except psycopg2.IntegrityError:
-            conn.rollback()
-            flash('⚠️ La URL ya está registrada.', 'error')
-
-        finally:
-            cursor.close()
-            conn.close()
-
-        return redirect(url_for('index'))
-
 #Actualizar IP
 @app.route('/actualizar_ip', methods=['POST'])
-def actualizar_ip():
-    url_id = request.form['url_id']
-    ip = request.form['ip']
+async def actualizar_ip():
+    form_data = await request.form
+    url_id = form_data.get('url_id')
+    ip = form_data.get('ip')
 
     if not ip:
-        flash("⚠️ No ingresaste una IP.", "error")
+        await flash("⚠️ No ingresaste una IP.", "error")
         return redirect(url_for('index'))
 
     conn = conectar_db()
@@ -191,25 +206,21 @@ def actualizar_ip():
         cursor.execute(
             'UPDATE urls SET ip_tvbox = %s WHERE id = %s', (ip, url_id)
         )
-        conn.commit()
-        flash("✅ IP guardada correctamente.", "success")
+        if cursor.rowcount == 0:
+            await flash("⚠️ No se encontró la URL para actualizar.", "error")
+        else:
+            conn.commit()
+            await flash("✅ IP guardada correctamente.", "success")
 
     except Exception as e:
         conn.rollback()
-        flash(f"⚠️ Error al guardar la IP: {e}", "error")
+        await flash(f"⚠️ Error al guardar la IP: {e}", "error")
 
     finally:
         cursor.close()
         conn.close()
 
     return redirect(url_for('index'))
-
-#Descargar m3u
-# @app.route('/descargar_m3u')
-# def descargar_m3u():
-#     url = request.args.get('url')
-#     contenido = f"#EXTM3U\n#EXTINF:-1,Stream\n{url}"
-#     return response(contenido, mimetype="audio/x-mpegurl", headers={"Content-Disposition": "attachment; filename=stream.m3u"})
 
 #Abrir VLC
 def abrir_vlc(url): 
@@ -271,52 +282,6 @@ def estado_adb():
 
     return jsonify(ips_conectadas)
 
-# Eliminar URL
-@app.route('/eliminar/<int:id>', methods=['POST'])
-def eliminar_url(id):
-    conn = conectar_db()
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM urls WHERE id = %s', (id,))
-    conn.commit()
-    conn.close()
-    flash('URL eliminada correctamente.', 'success')
-    return redirect(url_for('index'))
-
-# Verifica solo URLs con error o sin registro
-@app.route('/verificar_errores', methods=['POST'])
-async def verificar_errores():
-    conn = conectar_db()
-    cursor = conn.cursor()
-
-    cursor.execute('''
-        SELECT u.id, u.url
-        FROM urls u
-        LEFT JOIN verificaciones v ON u.id = v.url_id
-        WHERE v.url_id IS NULL OR v.exito = FALSE
-    ''')
-    urls_con_error = cursor.fetchall()
-
-    urls_dict = {url_id: url for url_id, url in urls_con_error}
-
-    # Ejecutar verificación en paralelo
-    resultados = verificar_url(urls_dict.values())
-
-    data = []
-    for url_id, url in urls_dict.items():
-        codigo, tiempo, exito = resultados.get(url, (None, None, False))
-        data.append((url_id, codigo, tiempo, exito))
-
-    if data:
-        cursor.executemany('''
-            INSERT INTO verificaciones (url_id, fecha_verificacion, codigo_respuesta, tiempo_respuesta, exito)
-            VALUES (%s, NOW(), %s, %s, %s)
-        ''', data)
-        conn.commit()
-
-    conn.close()
-    flash('URLs con error verificadas correctamente.', 'success')
-    return redirect(url_for('index'))
-
 #Interfaz de Errores
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
@@ -343,18 +308,6 @@ async def listar_errores():
 
     conn.close()
     return await render_template('Errores.html', errores=errores)
-
-# def registrar_error(url_id, tipo_error):
-#     conn = conectar_db()
-#     cursor = conn.cursor()
-
-#     cursor.execute('''
-#         INSERT INTO errores (url_id, tipo_error)
-#         VALUES (%s, %s)
-#     ''', (url_id, tipo_error))
-
-#     conn.commit()
-#     conn.close()
 
 #Informe de errores
 @app.route('/informe/errores_pdf')

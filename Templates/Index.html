@@ -26,11 +26,11 @@
                         <label class="form-label" for="ip">IP del TVBox:</label>
                         <input class="form-control" type="text" id="ip" name="ip">
                     </div>
-                    <div class="w-25">
+                    <!-- <div class="w-25">
                         <label class="form-label" for="intervalo">Verificación
                             (min):</label>
                         <input class="form-control" type="number" id="intervalo" name="intervalo" required>
-                    </div>
+                    </div> -->
                 </div>
                 <button class="btn btn-success mt-4 btn-sm" type="submit"><i class="bi bi-plus-lg"></i> Agregar</button>
                 <!-- <button class="btn btn-secondary mt-4 btn-sm mx-2">Relacionar IP</button> -->
@@ -40,10 +40,10 @@
                     <button class="btn btn-primary btn-sm" type="submit"><i class="bi bi-collection-play"></i>
                         VerificarTodo</button>
                 </form>
-                <form action="{{ url_for('verificar_errores') }}" method="POST">
+                <!-- <form action="{{ url_for('verificar_errores') }}" method="POST">
                     <button type="submit" class="btn btn-secondary btn-sm"><i class="bi bi-question-square"></i> Verificar
                         solo Errores</button>
-                </form>
+                </form> -->
                 <form action="{{ url_for('listar_errores') }}" method="GET" style="display: inline;">
                     <button type="submit" class="btn btn-danger btn-sm"><i class="bi bi-file-earmark-ruled"></i> Reporte de Errores</button>
                 </form>
@@ -86,13 +86,19 @@
             <tbody>
                 {% for url in urls %}
                 <tr>
-                    <td>{{ url[3] }}</td> <!-- Canal -->
+                    <td>{{ url[2] }}</td> <!-- Canal -->
                     <td
                         style="max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;">
                         {{ url[1] }}</td> <!-- URL -->
-                    <td>{{ url[4].strftime('%Y-%m-%d %H:%M:%S') if url[4] else 'Sin Registro' }}</td>
                     <td>
-                        {% if url[5] %} <!-- Si exito es TRUE -->
+                        {% if url[3] is not none %}
+                            {{ url[3].strftime('%Y-%m-%d %H:%M:%S') }}
+                        {% else %}
+                            Sin Registro
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if url[4] %}
                         <span class="badge bg-success p-2"><i class="bi bi-record2"></i> Rec</span>
                         {% else %}
                         <span class="badge bg-danger p-2"><i class="bi bi-exclamation-octagon"></i>
@@ -109,8 +115,8 @@
                                 class="bi bi-pip"></i></button>
                     </td>
                     <td>
-                        {% if url[6] %}
-                            <button class="btn btn-outline-success btn-sm" id="adb-btn-{{ url[6] }}" onclick="toggleADB('{{ url[6] }}')">
+                        {% if url[5] %}
+                            <button class="btn btn-outline-success btn-sm" id="adb-btn-{{ url[5] }}" onclick="toggleADB('{{ url[5] }}')">
                                 <i class="bi bi-android"></i>
                             </button>
                         {% else %}
@@ -121,13 +127,13 @@
                     <!-- <td><a href="{{ url[1] }}" class="btn btn-secondary btn-sm" download><i class="bi bi-download"></i></a></td> -->
                     <!-- <td>{{ url[2] }}</td>  Intervalo -->
                     <td id="ip-container-{{ url[0] }}">
-                        {% if url[6] %}
-                        <span>{{ url[6] }}</span> <!-- Si la IP está registrada, se muestra -->
-                        <button class="btn btn-outline-secondary btn-sm mx-3" onclick="editarIp('{{ url[0] }}', '{{ url[6] }}')">
+                        {% if url[5] %}
+                        <span>{{ url[5] }}</span> <!-- Si la IP está registrada, se muestra -->
+                        <button class="btn btn-outline-secondary btn-sm mx-3" onclick="editarIp('{{ url[0] }}', '{{ url[5] }}')">
                             <i class="bi bi-pencil"></i>
                         </button>
                         {% else %}
-                        <input type="text" id="ip-input-{{ url[0] }}" class="form-control py-1 w-75 d-inline-block"
+                        <input type="text" id="ip-input-{{ url[0] }}" class="form-control py-1 w-50 d-inline-block"
                             placeholder="Ingrese IP">
                         <button class="btn btn-info btn-sm" onclick="guardarIp('{{ url[0] }}')">
                             <i class="bi bi-check-lg"></i>
@@ -151,13 +157,6 @@
         </table>
     </div>
 </body>
-<!-- <script>
-    function mostrarMensaje(elemento) {
-        let mensajeSpan = elemento.parentElement.querySelector("vlc-not");
-
-        mensajeSpan.innerText = "Abriendo VLC...";
-    }
-</script>  -->
 <script>
     function reproducir(url) {
         const videoPlayer = document.getElementById('video-player');
@@ -206,24 +205,6 @@
         `;
     }
 </script>
-<!-- <script>
-    function conectarADB(ip) {
-        if (!ip) {
-            alert("⚠️ No hay una IP registrada.");
-            return;
-        }
-    
-        fetch('/conectar_adb', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ip: ip })
-        })
-        .then(response => response.json())
-        .then(data => alert(data.message))
-        .catch(error => console.error('Error:', error));
-    }
-</script> 
--->
 <script>
     document.addEventListener("DOMContentLoaded", function () {
         fetch('/estado_adb')
@@ -273,8 +254,5 @@
         }
     }
 </script>
-    
-<!-- <script src="https://vjs.zencdn.net/7.10.2/video.js"></script> -->
 <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-
 </html>
