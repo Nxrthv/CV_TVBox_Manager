@@ -1,4 +1,4 @@
-from quart import Quart, render_template, request, redirect, url_for, flash, jsonify
+from quart import Quart, render_template, request, redirect, url_for, flash, jsonify, render_template_string
 import psycopg2, time, subprocess, aiohttp, asyncio, os, logging, requests
 from Conexion import conectar_db
 
@@ -223,64 +223,101 @@ async def actualizar_ip():
     return redirect(url_for('index'))
 
 #Abrir VLC
-def abrir_vlc(url): 
-    subprocess.Popen(["C:\\Program Files\\VideoLAN\\VLC\\vlc.exe", url])
+def abrir_vlc(url):
+    command = f'"C:\\Program Files\\VideoLAN\\VLC\\vlc.exe" "{url}"'
+    subprocess.Popen(command, shell=True)
 
 @app.route('/abrir_vlc')
 async def abrir_vlc_route():
     url = request.args.get('url')
     if url:
         abrir_vlc(url)
-        return None
+        return await render_template_string('''
+            <html>
+                <head>
+                    <script>
+                        alert("VLC abierto con la URL proporcionada.");
+                        window.history.back();  // Regresar a la página anterior
+                    </script>
+                </head>
+                <body>
+                </body>
+            </html>
+        ''')
     else:
-        return "No se proporcionó una URL", 400 
+        return await render_template_string('''
+            <html>
+                <head>
+                    <script>
+                        alert("No se proporcionó una URL.");
+                        window.history.back();  // Regresar a la página anterior
+                    </script>
+                </head>
+                <body>
+                </body>
+            </html>
+        '''), 400
     
 #Coneccion ADB
+async def run_command(command):
+    process = await asyncio.create_subprocess_shell(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    stdout, stderr = await process.communicate()
+    return stdout.decode().strip(), stderr.decode().strip()
+
 @app.route('/conectar_adb', methods=['POST'])
-def conectar_adb():
-    data = request.get_json()
+async def conectar_adb():
+    data = await request.get_json()
     ip = data.get('ip')
+
+    if not ip:
+        return jsonify({"message": "La IP es requerida."}), 400
 
     try:
         adb_command = f"adb connect {ip}"
-        adb_result = subprocess.run(adb_command, shell=True, capture_output=True, text=True)
+        adb_stdout, adb_stderr = await run_command(adb_command)
 
-        if "connected" in adb_result.stdout:
+        if "connected" in adb_stdout:
             scrcpy_command = f"scrcpy -s {ip}"
-            subprocess.Popen(scrcpy_command, shell=True)
+            asyncio.create_task(run_command(scrcpy_command))
             return jsonify({"message": f"Conectado a {ip} y lanzando scrcpy."}), 200
         else:
-            return jsonify({"message": f"No se pudo conectar a {ip}."}), 400
+            error_message = adb_stderr.strip() or "No se pudo conectar."
+            return jsonify({"message": f"No se pudo conectar a {ip}: {error_message}"}), 400
     except Exception as e:
         return jsonify({"message": f"Error al conectar o lanzar scrcpy: {str(e)}"}), 500
-    
+
 #Desconectar ADB
+async def run_command(command):
+    process = await asyncio.create_subprocess_shell(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    stdout, stderr = await process.communicate()
+    return stdout.decode().strip(), stderr.decode().strip()
+
 @app.route('/desconectar_adb', methods=['POST'])
-def desconectar_adb():
-    data = request.get_json()
+async def desconectar_adb():
+    data = await request.get_json()
     ip = data.get('ip')
 
     if not ip:
         return jsonify({"message": "⚠️ No se proporcionó una IP."}), 400
 
-    resultado = subprocess.run(["adb", "disconnect"], capture_output=True, text=True)
+    try:
+        adb_command = f"adb disconnect {ip}"
+        adb_stdout, adb_stderr = await run_command(adb_command)
 
-    if "disconnected" in resultado.stdout:
-        return jsonify({"message": f"🔴 Desconectado de {ip}."})
-    else:
-        return jsonify({"message": f"⚠️ Error al desconectar: {resultado.stderr}"}), 500
-    
-#Consultar estado de Coneccion
-@app.route('/estado_adb', methods=['GET'])
-def estado_adb():
-    resultado = subprocess.run(["adb", "devices"], capture_output=True, text=True)
-    dispositivos = resultado.stdout.splitlines()[1:]
-
-    ips_conectadas = [
-        linea.split("\t")[0] for linea in dispositivos if "device" in linea
-    ]
-
-    return jsonify(ips_conectadas)
+        if "disconnected" in adb_stdout:
+            return jsonify({"message": f"🔴 Desconectado de {ip}."}), 200
+        else:
+            return jsonify({"message": f"⚠️ Error al desconectar: {adb_stderr}"}), 500
+    except Exception as e:
+        return jsonify({"message": f"⚠️ Error al desconectar: {str(e)}"}), 500
 
 #Interfaz de Errores
 from reportlab.lib.pagesizes import letter

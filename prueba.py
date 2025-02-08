@@ -1,28 +1,63 @@
-import requests
+# import subprocess
+# import json
 
-url = "http://headends.ottvideostream.cloud:8933/CORAZON/mpegts"
+# def subir_volumen(ip_tvbox, puerto):
+#     # Comando para subir el volumen
+#     comando = f"adb -s {ip_tvbox}:{puerto} shell input keyevent 24"
 
-def verificar_stream(url):
+#     try:
+#         subprocess.run(comando, shell=True, check=True)
+#         mensaje = "Se subió el volumen correctamente"
+#     except subprocess.CalledProcessError as e:
+#         mensaje = f"Error al subir el volumen: {e}"
+
+#     return json.dumps({"mensaje": mensaje})
+
+# ip_tvbox = "192.168.90.66"
+# puerto = "5555"
+
+# resultado = subir_volumen(ip_tvbox, puerto)
+# print(resultado)
+
+# def bajar_volumen(ip_tvbox, puerto):
+#     # Comando para bajar el volumen
+#     comando = f"adb -s {ip_tvbox}:{puerto} shell input keyevent 25"
+
+#     try:
+#         subprocess.run(comando, shell=True, check=True)
+#         mensaje = "Se bajo el volumen correctamente"
+#     except subprocess.CalledProcessError as e:
+#         mensaje = f"Error al bajar el volumen: {e}"
+
+#     return json.dumps({"mensaje": mensaje})
+
+# ip_tvbox = "192.168.90.66"
+# puerto = "5555"
+
+# resultado = subir_volumen(ip_tvbox, puerto)
+# print(resultado)
+
+import subprocess
+import json
+
+def cambiar_url_bsplayer(ip_tvbox, puerto, nueva_url):
+    # Comando para cambiar la URL en BS Player Pro
+    comando = f'adb -s {ip_tvbox}:{puerto} shell am start -n com.bsplayer.pro/.MainActivity -e url "{nueva_url}"'
+
     try:
-        with requests.get(url, stream=True, timeout=5) as response:
-            if response.status_code == 200:
-                # Leer solo un pequeño fragmento para verificar que el stream está activo
-                chunk = next(response.iter_content(1024), None)
-                if chunk:
-                    return True  # Stream activo
-                else:
-                    return False  # Stream no activo
-            else:
-                return False  # Stream no activo
-    except requests.Timeout:
-        print(f"⚠️ Timeout al intentar acceder a {url}")
-        return False  # Timeout
-    except requests.RequestException as e:
-        print(f"❌ Error al acceder a {url}: {e}")
-        return False  # Otro error
+        # Ejecutar el comando
+        subprocess.run(comando, shell=True, check=True)
+        mensaje = "URL cambiada correctamente en BS Player Pro"
+    except subprocess.CalledProcessError as e:
+        mensaje = f"Error al cambiar la URL: {e}"
 
-# Probar la función
-if verificar_stream(url):
-    print("El stream está activo.")
-else:
-    print("El stream no está activo.")
+    # Devolver el mensaje en formato JSON
+    return json.dumps({"mensaje": mensaje})
+
+# Ejemplo de uso
+ip_tvbox = "192.168.90.55"      
+puerto = "5555"
+nueva_url = "http://181.119.107.201:5054/play/a0dt/index.m3u8"  # Reemplaza con la nueva URL
+
+resultado = cambiar_url_bsplayer(ip_tvbox, puerto, nueva_url)
+print(resultado)
